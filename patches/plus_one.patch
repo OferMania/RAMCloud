@@ -18,10 +18,10 @@ From: nobody <nobody@nowhere>
  src/MasterServiceTest.cc           |    8 +--
  src/ObjectManager.cc               |    1 
  src/PlusOneBackupSelector.cc       |   90 ++++++++++++++++++++++++++++++++
- src/PlusOneBackupSelector.h        |   41 +++++++++++++++
+ src/PlusOneBackupSelector.h        |   42 +++++++++++++++
  src/PlusOneBackupSelectorTest.cc   |  101 ++++++++++++++++++++++++++++++++++++
  src/RecoverySegmentBuilderTest.cc  |    2 -
- src/ReplicaManager.cc              |   10 ++++
+ src/ReplicaManager.cc              |   17 ++++++
  src/ReplicaManager.h               |    7 ++
  src/ReplicaManagerTest.cc          |    2 -
  src/SegmentManagerTest.cc          |    2 -
@@ -31,7 +31,7 @@ From: nobody <nobody@nowhere>
  src/ServerTracker.h                |   28 ++++++++++
  src/ServerTrackerTest.cc           |   29 ++++++++++
  src/SideLogTest.cc                 |    2 -
- 27 files changed, 350 insertions(+), 17 deletions(-)
+ 27 files changed, 358 insertions(+), 17 deletions(-)
  create mode 100644 src/PlusOneBackupSelector.cc
  create mode 100644 src/PlusOneBackupSelector.h
  create mode 100644 src/PlusOneBackupSelectorTest.cc
@@ -341,10 +341,10 @@ index 00000000..98869476
 +} // namespace RAMCloud
 diff --git a/src/PlusOneBackupSelector.h b/src/PlusOneBackupSelector.h
 new file mode 100644
-index 00000000..794a9285
+index 00000000..b84eca53
 --- /dev/null
 +++ b/src/PlusOneBackupSelector.h
-@@ -0,0 +1,41 @@
+@@ -0,0 +1,42 @@
 +/* Copyright (c) 2011-2019 Stanford University
 + *
 + * Permission to use, copy, modify, and distribute this software for any
@@ -377,7 +377,8 @@ index 00000000..794a9285
 +                                       const ServerId* serverId,
 +                                       uint32_t numReplicas,
 +                                       bool allowLocalBackup);
-+    ServerId selectSecondary(uint32_t numBackups, const ServerId backupIds[]);
++    ServerId selectSecondary(
++      uint32_t numBackups, const ServerId backupIds[]) override;
 +
 +  PRIVATE:
 +    DISALLOW_COPY_AND_ASSIGN(PlusOneBackupSelector);
@@ -388,11 +389,11 @@ index 00000000..794a9285
 +#endif
 diff --git a/src/PlusOneBackupSelectorTest.cc b/src/PlusOneBackupSelectorTest.cc
 new file mode 100644
-index 00000000..ab0485ab
+index 00000000..4b1e44fc
 --- /dev/null
 +++ b/src/PlusOneBackupSelectorTest.cc
 @@ -0,0 +1,101 @@
-+/* Copyright (c) 2009-2016 Stanford University
++/* Copyright (c) 2009-2019 Stanford University
 + *
 + * Permission to use, copy, modify, and distribute this software for any
 + * purpose with or without fee is hereby granted, provided that the above
@@ -507,10 +508,16 @@ index 4e82946a..57706f3e 100644
          , allocator(&serverConfig)
          , segmentManager(&context, &serverConfig, &serverId,
 diff --git a/src/ReplicaManager.cc b/src/ReplicaManager.cc
-index 517f9a32..10c52b08 100644
+index 517f9a32..03f49620 100644
 --- a/src/ReplicaManager.cc
 +++ b/src/ReplicaManager.cc
-@@ -17,6 +17,7 @@
+@@ -13,10 +13,13 @@
+  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+  */
+ 
++#include <stdexcept>
++
+ #include "BackupClient.h"
  #include "CycleCounter.h"
  #include "Logger.h"
  #include "MinCopysetsBackupSelector.h"
@@ -518,7 +525,7 @@ index 517f9a32..10c52b08 100644
  #include "ShortMacros.h"
  #include "RawMetrics.h"
  #include "ReplicaManager.h"
-@@ -39,6 +40,9 @@ namespace RAMCloud {
+@@ -39,6 +42,9 @@ namespace RAMCloud {
   * \param useMinCopysets
   *      Specifies whether to use the MinCopysets replication scheme or random
   *      replication.
@@ -528,7 +535,7 @@ index 517f9a32..10c52b08 100644
   * \param allowLocalBackup
   *      Specifies whether to allow replication to the local backup.
   */
-@@ -46,6 +50,7 @@ ReplicaManager::ReplicaManager(Context* context,
+@@ -46,6 +52,7 @@ ReplicaManager::ReplicaManager(Context* context,
                                 const ServerId* masterId,
                                 uint32_t numReplicas,
                                 bool useMinCopysets,
@@ -536,13 +543,18 @@ index 517f9a32..10c52b08 100644
                                 bool allowLocalBackup)
      : context(context)
      , numReplicas(numReplicas)
-@@ -61,12 +66,17 @@ ReplicaManager::ReplicaManager(Context* context,
+@@ -61,12 +68,22 @@ ReplicaManager::ReplicaManager(Context* context,
      , failureMonitor(context, this)
      , replicationCounter()
      , useMinCopysets(useMinCopysets)
 +    , usePlusOneBackup(usePlusOneBackup)
      , allowLocalBackup(allowLocalBackup)
  {
++    if (useMinCopysets && usePlusOneBackup) {
++        throw std::invalid_argument(
++            "Can only use one of min-copysets and plus-one backup strategies, "
++            "but both were specified.");
++    }
      if (useMinCopysets) {
          backupSelector.reset(new MinCopysetsBackupSelector(context, masterId,
                                                             numReplicas,
