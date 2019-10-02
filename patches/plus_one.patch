@@ -1,6 +1,6 @@
 Adds Plus One Backup scheme, which selects the backupServerId determinstically as (masterServerId+1)%n
 
-From: nobody <nobody@nowhere>
+From: Ofer Gill <ofer.gill@stateless.net>
 
 
 ---
