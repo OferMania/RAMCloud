@@ -1,0 +1,16 @@
+#!/bin/bash -ex
+# Determines RAMCloud coordinator configuration from the environment and launches the RAMCloud coordinator.
+
+# Load our common libraries
+source /usr/local/bin/launch-rc-common
+
+# Parse the configuration data and determine our ZK and transport information.
+load_rc_config "coordinator"
+
+# Launch the RAMCloud coordinator with the gathered information.
+echo "Launching rc-coordinator. ZK_ENSEMBLE=\"${ZK_ENSEMBLE}\" LOCATOR=\"${RC_LOCATOR}\""
+exec /usr/local/bin/rc-coordinator \
+  --externalStorage "zk:${ZK_ENSEMBLE}" \
+  --clusterName main \
+  --coordinator "${RC_LOCATOR}" \
+  --deadServerTimeout 1000

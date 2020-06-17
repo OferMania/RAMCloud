@@ -1,0 +1,20 @@
+#!/bin/bash -ex
+# Determines RAMCloud server configuration from the environment and launches the RAMCloud server.
+
+# Load our common libraries
+source /usr/local/bin/launch-rc-common
+
+# Parse the configuration data and determine our ZK and transport information.
+load_rc_config "server"
+
+# Launch the RAMCloud server with the gathered information.
+echo "Launching rc-server. ZK_ENSEMBLE=\"${ZK_ENSEMBLE}\" LOCATOR=\"${RC_LOCATOR}\""
+exec /usr/local/bin/rc-server \
+  --externalStorage "zk:${ZK_ENSEMBLE}" \
+  --clusterName main \
+  --local "${RC_LOCATOR}" \
+  --replicas 1 \
+  --timeoutIntervals 500 \
+  --backupInMemory \
+  --hugepage \
+  ${RC_ARGS}

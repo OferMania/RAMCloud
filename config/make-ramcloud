@@ -1,5 +1,10 @@
-#!/bin/bash -eu
+#!/bin/bash -eux
 # Build the primary RAMCloud binaries and libraries.
+
+function die {
+   echo "${1}"
+   exit 1
+}
 
 # Command-line Defaults.
 DEBUG=no
@@ -41,7 +46,13 @@ while [[ ${#} -gt 0 ]]; do
   esac
 done
 
-set -x
+# If we're not running as root then try to run as root.
+if [[ ${EUID} -ne 0 ]]; then
+  echo "Rerunning script as root."
+  CURRENT_SCRIPT="$(readlink --canonicalize-existing "${0}")"
+  exec sudo --preserve-env bash "${CURRENT_SCRIPT}"
+fi
+
 cd /src
 if [[ ! -d RAMCloud ]]; then
   # Get the patched RAMCloud source if it does not already exist.
@@ -60,7 +71,16 @@ cd /src/RAMCloud
 
 # Build RAMCloud.
 rm -rf install
-make "-j$(nproc)" install DEBUG="${DEBUG}" DEBUG_OPT="${DEBUG_OPT}" GLIBCXX_USE_CXX11_ABI=yes EXTRACXXFLAGS='-Wno-error'
+BUILD_OPTS="DEBUG=${DEBUG} DEBUG_OPT="${DEBUG_OPT}" GLIBCXX_USE_CXX11_ABI=yes EXTRACXXFLAGS='-Wno-error'"
+BUILD_OPTS_DPDK="DPDK=no"
+BUILD_OPTS_EXTRALIBS="-lpcap -libverbs -lmnl -lmlx5"
+# -lIPSec_MB
+BUILD_OPTS="${BUILD_OPTS} ${BUILD_OPTS_DPDK} EXTRALIBS='${BUILD_OPTS_EXTRALIBS}'"
+
+if [[ ${MAKEFLAGS-"unset"} == "unset" ]]; then
+  MAKEFLAGS="-j$(( $(nproc) + 1 ))"
+fi
+eval MAKEFLAGS=${MAKEFLAGS} make install ${BUILD_OPTS} || die "Failed to build RAMCloud"
 
 # Rename the binaries to something a little more descriptive.
 mv install/bin/coordinator install/bin/rc-coordinator
@@ -68,7 +88,11 @@ mv install/bin/client      install/bin/rc-client
 mv install/bin/server      install/bin/rc-server
 
 # Move the libraries to the correct place instead of in the ramcloud subdirectory.
-mv install/lib/ramcloud/* install/lib && rmdir install/lib/ramcloud
+mv install/lib/ramcloud/* install/lib && rmdir install/lib/ramcloud || die "Failed to move RAMCloud libraries"
+
+# Copy install/bin and install/lib to /usr/local for convenience reasons
+cp install/bin/rc-* /usr/local/bin
+cp -rf install/lib /usr/local/lib
 
 # Build the proto files so we can read what RAMCloud puts in ZooKeeper.
 cd src

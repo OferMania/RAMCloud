@@ -1,0 +1,25 @@
+#!/bin/bash -eux
+# Builds Intel IPsec MB (https://github.com/intel/intel-ipsec-mb).
+
+IPSEC_MB_VERSION=${IPSEC_MB_VERSION:-0.52}
+IPSEC_MB_SRC=${IPSEC_MB_SRC:-"/tmp/ipsec-mb"}
+IPSEC_MB_GIT=${IPSEC_MB_GIT:-"https://github.com/intel/intel-ipsec-mb.git"}
+
+function die {
+  >&2 echo "${1}"
+  exit 1
+}
+
+if [[ ! -e "${IPSEC_MB_SRC}" ]]; then
+  echo "Cloning IPsec MB build directory."
+  git clone --branch v${IPSEC_MB_VERSION} "${IPSEC_MB_GIT}" "${IPSEC_MB_SRC}"
+else
+  echo "Removing existing IPsec MB build directory."
+  rm -rf "${IPSEC_MB_SRC}/obj"
+fi
+
+cd "${IPSEC_MB_SRC}" || die "Failed to cd to \"${IPSEC_MB_SRC}\""
+make
+make install
+
+echo "You need to rebuild DPDK now to include the AESNI_MB PMD"

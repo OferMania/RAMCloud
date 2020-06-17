@@ -18,11 +18,16 @@ RUN apt-get update \
       libboost-program-options-dev \
       libboost-system-dev \
       libibverbs-dev \
+      libmnl-dev \
+      libpcap-dev \
       libpcre++-dev \
       libssl-dev \
       libzookeeper-mt-dev \
+      libzookeeper-mt2 \
+      pipenv \
       procps \
       protobuf-compiler \
+      python3 \
       python3-pip \
       # Install this python package to work around https://github.com/docker/docker-py/issues/1502
       python-backports.ssl-match-hostname \

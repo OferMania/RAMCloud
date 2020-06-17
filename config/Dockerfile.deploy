@@ -1,0 +1,123 @@
+# IMPORTANT: This file matches the config/Dockerfile from nfapp except:
+# - All nfapp build steps are removed
+
+# Base image (install basic runtime dependencies here)
+FROM statelesstestregistry.azurecr.io/stateless/base:10 as base
+
+WORKDIR /tmp
+RUN apt-get update \
+ && apt-get install --yes \
+      build-essential \
+      ccache \
+      cmake \
+      g++ \
+      git \
+      ibverbs-providers \
+      ibverbs-utils \
+      infiniband-diags \
+      iproute2 \
+      iputils-ping \
+      jq \
+      kmod \
+      libbenchmark-dev \
+      libboost1.67-all-dev \
+      libc-ares-dev \
+      libcap-dev \
+      libgflags-dev \
+      libibmad-dev \
+      libibumad-dev \
+      libibverbs-dev \
+      libjsonv1.3 \
+      libmnl-dev \
+      libnl-3-dev \
+      libnl-route-3-dev \
+      libnuma-dev \
+      libpcap-dev \
+      libpcre++-dev \
+      libprotobuf-dev \
+      libprotoc-dev \
+      librdmacm-dev \
+      libspdlog-dev \
+      libssl-dev \
+      libtins-dev \
+      libtool \
+      libudev-dev \
+      libunwind-dev \
+      libzkpp0.2 \
+      libzookeeper-mt-dev \
+      libzookeeper-mt2 \
+      linux-headers-${KERNEL_VERSION} \
+      lsb-release \
+      man \
+      nasm \
+      ninja-build \
+      pciutils \
+      pkg-config \
+      procps \
+      protobuf-compiler \
+      python3 \
+      rdma-core \
+      rdmacm-utils \
+      stgit \
+      wget \
+ && rm -rf /var/lib/apt/lists/*
+ 
+# ccache by default will use $HOME/.ccache which doesn't exist in the container.
+# NFApp has a docker volume named 'stateless-nfapp-ccache' that gets mounted at
+# /var/ccache to persist ccache files across container start/stops to reduce compile times.
+ENV CCACHE_DIR=/var/ccache
+RUN mkdir -p /var/ccache && chmod 777 /var/ccache
+
+# Build IPsec MB from source. This must be done before DPDK installation.
+COPY ./config/make-ipsec-mb /tmp/make-ipsec-mb
+RUN bash ./make-ipsec-mb
+
+# Ideally we would install grpc from a deb and include this build in the stateless-apt repo.  Unfortuantely that has
+# proven to be a very challenging task.  In the future we should move this build once debian packaging for grpc becomes
+# more stable and useful.
+# Build grpc from source.  Add -Wno-error because grpc currently has issues compiling on g++-8.3.
+# Currently we have the debugging flag ggdb3 enabled to make it a little easier to hunt down problems in our use of
+# grpc.
+ENV GRPC_VERSION=1.27.3
+RUN git clone --branch v${GRPC_VERSION} https://github.com/grpc/grpc grpc-${GRPC_VERSION} \
+ && cd grpc-${GRPC_VERSION} \
+ && git submodule update --init third_party/abseil-cpp \
+ && mkdir build \
+ && cd build \
+ && cmake ../ -DgRPC_INSTALL=ON \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DBUILD_SHARED_LIBS=ON \
+    -DgRPC_ABSL_PROVIDER=module \
+    -DgRPC_CARES_PROVIDER=package \
+    -DgRPC_PROTOBUF_PROVIDER=package \
+    -DgRPC_SSL_PROVIDER=package \
+    -DgRPC_ZLIB_PROVIDER=package \
+ && make -j$(( $(nproc) + 1 )) install
+
+ENV DPDK_ARCH="x86_64"
+ENV DPDK_EXECENV="linuxapp"
+ENV DPDK_MACHINE="native"
+ENV DPDK_TOOLCHAIN="gcc"
+ENV EXPECTED_KERNEL_VERSION="${KERNEL_VERSION}"
+COPY ./config/make-dpdk /tmp/make-dpdk
+RUN ./make-dpdk \
+ && ldconfig
+
+COPY ./patches /tmp/patches
+RUN mkdir config
+COPY ./config/patch /tmp/config/patch
+COPY ./config/make-ramcloud-deploy /tmp/make-ramcloud-deploy
+RUN ./make-ramcloud-deploy \
+ && ldconfig
+
+# Run image for RAMCloud Coordinator
+FROM debian:buster as rc-coordinator
+COPY ./config/launch-rc-common /usr/local/bin/launch-rc-common
+COPY ./config/launch-rc-coordinator /usr/local/bin/launch-rc-coordinator
+ENTRYPOINT ["/usr/local/bin/launch-rc-coordinator"]
+
+# Run image for RAMCloud Server
+FROM debian:buster as rc-server
+COPY ./config/launch-rc-common /usr/local/bin/launch-rc-common
+COPY ./config/launch-rc-server /usr/local/bin/launch-rc-server
+ENTRYPOINT ["/usr/local/bin/launch-rc-server"]

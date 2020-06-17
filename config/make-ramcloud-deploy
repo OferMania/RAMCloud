@@ -1,0 +1,41 @@
+#!/bin/bash -eux
+# Builds RAMCloud. This is used both for the initial build in the Dockerfile and can be used to recompile modified
+# RAMCloud code from within a dev-env, e.g. to enable debug logging.
+
+function die {
+   echo "${1}"
+   exit 1
+}
+
+# If we're not running as root then try to run as root.
+if [[ ${EUID} -ne 0 ]]; then
+  echo "Rerunning script as root."
+  CURRENT_SCRIPT="$(readlink --canonicalize-existing "${0}")"
+  exec sudo --preserve-env bash "${CURRENT_SCRIPT}"
+fi
+
+echo "Cloning RAMCloud."
+cd /tmp
+./config/patch
+cd /tmp/RAMCloud
+
+BUILD_OPTS="DEBUG=yes GLIBCXX_USE_CXX11_ABI=yes EXTRACXXFLAGS='-Wno-error'"
+BUILD_OPTS_DPDK="DPDK=no"
+BUILD_OPTS_EXTRALIBS="-lpcap -libverbs -lmnl -lmlx5 -lIPSec_MB"
+BUILD_OPTS="${BUILD_OPTS} ${BUILD_OPTS_DPDK} EXTRALIBS='${BUILD_OPTS_EXTRALIBS}'"
+export INSTALL_DIR=/usr/local
+
+if [[ ${MAKEFLAGS-"unset"} == "unset" ]]; then
+  MAKEFLAGS="-j$(( $(nproc) + 1 ))"
+fi
+eval MAKEFLAGS=${MAKEFLAGS} make install ${BUILD_OPTS} || die "Failed to build RAMCloud"
+
+# RAMCloud decided to name its binaries "coordinator", "client", and "server". Good job RAMCloud.
+for binary in server client coordinator ; do
+  mv "/usr/local/bin/${binary}" "/usr/local/bin/rc-${binary}"
+done
+
+# RAMCloud puts its libraries in a dumb place. Instead of changing CMake to look there, just move them.
+mv /usr/local/lib/ramcloud/* /usr/local/lib && rmdir /usr/local/lib/ramcloud || die "Failed to move RAMCloud libraries"
+
+cd /tmp

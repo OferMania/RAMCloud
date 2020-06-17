@@ -1,0 +1,67 @@
+#!/bin/bash -eux
+# Builds DPDK. This is used both for the initial build in the Dockerfile and can be used to recompile modified DPDK code
+# from within a dev-env, e.g. to enable DPDK debug logging.
+
+function die {
+  >&2 echo "${1}"
+  exit 1
+}
+
+# If we're not running as root then try to run as root.
+if [[ ${EUID} -ne 0 ]]; then
+  echo "Rerunning script as root."
+  CURRENT_SCRIPT="$(readlink --canonicalize-existing  "${0}")"
+  exec sudo --preserve-env bash -eux "${CURRENT_SCRIPT}"
+fi
+
+# Check the environment.
+[[ ${EUID} -ne 0 ]]                        && die "Expected to run as root!"
+[[ ${DPDK_ARCH-"unset"} == "unset" ]]      && die "Expected DPDK_ARCH environment variable to be set!"
+[[ ${DPDK_MACHINE-"unset"} == "unset" ]]   && die "Expected DPDK_MACHINE environment variable to be set!"
+[[ ${DPDK_EXECENV-"unset"} == "unset" ]]   && die "Expected DPDK_EXECENV environment variable to be set!"
+[[ ${DPDK_TOOLCHAIN-"unset"} == "unset" ]] && die "Expected DPDK_TOOLCHAIN environment variable to be set!"
+[[ ${DPDK_ARCH-"unset"} == "unset" ]]      && die "Expected DPDK_ARCH environment variable to be set!"
+[[ "${DPDK_ARCH}" != "x86_64" ]]           && die "x86_64 is the only supported arch right now!"
+
+DPDK_SRC="$(mktemp -d)/dpdk"
+DPDK_TARGET="${DPDK_ARCH}-${DPDK_MACHINE}-${DPDK_EXECENV}-${DPDK_TOOLCHAIN}"
+
+echo "Building DPDK target ${DPDK_TARGET} with kernel headers ${EXPECTED_KERNEL_VERSION}."
+echo "Cloning DPDK."
+git clone --branch v19.05-stateless3 "https://github.com/BeStateless/dpdk.git" "${DPDK_SRC}"
+cd "${DPDK_SRC}"
+./patch
+cd dpdk
+# This environment variable is how we inform the DPDK build process to use the kernel headers we want instead of looking
+# for the kernel headers for the currently running kernel on the host.
+export RTE_KERNELDIR="/lib/modules/${EXPECTED_KERNEL_VERSION}/build"
+make config T="${DPDK_TARGET}" || die "Failed to configure DPDK!"
+
+DPDK_CONFIG="${DPDK_SRC}/dpdk/build/.config"
+
+# Enable the MLX5 driver.
+sed -i 's/CONFIG_RTE_LIBRTE_MLX5_PMD=n/CONFIG_RTE_LIBRTE_MLX5_PMD=y/' "${DPDK_CONFIG}"
+
+# Enable the pcap driver.
+sed -i 's/CONFIG_RTE_LIBRTE_PMD_PCAP=n/CONFIG_RTE_LIBRTE_PMD_PCAP=y/' "${DPDK_CONFIG}"
+
+# Enable the AES-NI MB driver.
+sed -i 's/CONFIG_RTE_LIBRTE_PMD_AESNI_MB=n/CONFIG_RTE_LIBRTE_PMD_AESNI_MB=y/' "${DPDK_CONFIG}"
+
+# Disable the IGB_UIO since it does not support -fpic and we don't use it
+sed -i 's/CONFIG_RTE_EAL_IGB_UIO=y/CONFIG_RTE_EAL_IGB_UIO=n/' "${DPDK_CONFIG}"
+
+# Disable KNI module since it does not support -fpic and we don't use it
+sed -i 's/CONFIG_RTE_LIBRTE_KNI=y/CONFIG_RTE_LIBRTE_KNI=n/' "${DPDK_CONFIG}"
+sed -i 's/CONFIG_RTE_LIBRTE_PMD_KNI=y/CONFIG_RTE_LIBRTE_PMD_KNI=n/' "${DPDK_CONFIG}"
+sed -i 's/CONFIG_RTE_KNI_KMOD=y/CONFIG_RTE_KNI_KMOD=n/' "${DPDK_CONFIG}"
+sed -i 's/CONFIG_RTE_KNI_KMOD_ETHTOOL=y/CONFIG_RTE_KNI_KMOD_ETHTOOL=n/' "${DPDK_CONFIG}"
+sed -i 's/CONFIG_RTE_KNI_PREEMPT_DEFAULT=y/CONFIG_RTE_KNI_PREEMPT_DEFAULT=n/' "${DPDK_CONFIG}"
+
+if [[ ${MAKEFLAGS-"unset"} == "unset" ]]; then
+  MAKEFLAGS="-j$(( $(nproc) + 1 ))"
+fi
+export MAKEFLAGS
+make || die "Failed to make DPDK!"
+make install || die "Failed to install DPDK!"
+rm -fr "${DPDK_SRC}"

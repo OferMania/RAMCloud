@@ -1,0 +1,118 @@
+#!/bin/bash -eux
+# Common library for handling the launching of RAMCloud
+
+# Preinitialize our globals
+# (Yes, I know. "globals are bad". Bash isn't that forgiving though. The alternatives are more obtuse.)
+
+declare -g READ_EXCEPTION=""
+declare -g RESULT=""
+
+# Safely read a single, non-blank JSON value
+read_json_value() {
+  # Check that we got exactly one argument
+  [[ $# -ne 2 ]] && READ_EXCEPTION="read_json_value requires exactly two arguments." && return 0
+  local FILENAME="${1}"
+  local JSON_QUERY="${2}"
+
+  # Pre-initialize our exception output to an error state.
+  READ_EXCEPTION="Unexpected early termination"
+  # Reset our output
+  RESULT=""
+
+
+  # Make sure our config file is actually present
+  [[ ! -e ${FILENAME} ]] && READ_EXCEPTION="File ${FILENAME} not found." && return 0
+  # Fetch our transport
+  RESULT=$(jq -r "${JSON_QUERY}" "${FILENAME}")
+  # Check that jq was happy with the result.
+  [[ $? != 0 ]] && READ_EXCEPTION="Failed to execute query '${JSON_QUERY}'. jq Error." && return 0
+  # Check that we actually got something
+  [[ -z "${RESULT}" ]] && READ_EXCEPTION="Failed to execute query '${JSON_QUERY}'. Blank returned." && return 0
+
+  # Blank our exception to indicate success.
+  READ_EXCEPTION=""
+
+  #echo "query result: '${RESULT}''"
+  return 0
+}
+
+# Populate the environment with all of the relevant values from the configuration environment
+load_rc_config() {
+  local SERVICE
+
+  # Check that we got exactly one argument
+  [[ $# -ne 1 ]] && echo "load_rc_config requires exactly one argument." && exit 1
+
+  # Name our argument
+  SERVICE="${1}"
+
+  # Check to make sure our argument is one of our two valid inputs
+  [[ "${1}" != "coordinator" ]] && [[ "${1}" != "server" ]] && echo "load_rc_config must be passed one of 'coordinator' or 'server'." && exit 1
+
+  # If we haven't gotten Zookeeper information from our environment.
+  if [[ "${ZK_ENSEMBLE-"unset"}" == "unset" ]]; then
+    read_json_value '/var/stateless/orchestrator/cluster_state.json' \
+      '[.configuration.ensemble[] | [.address, .client_port | tostring] | join(":")] | join(",")'
+    [[ "${READ_EXCEPTION}" ]] && echo "Could not determine ZooKeeper ensemble. Cause: ${READ_EXCEPTION}" && exit 1
+    ZK_ENSEMBLE=${RESULT}
+  fi
+
+  if [[ "${TRANSPORT-"unset"}" == "unset" ]]; then
+    read_json_value '/etc/stateless/platform.json' '.kv.transport.type'
+    [[ "${READ_EXCEPTION}" ]] && echo "Failed accessing .kv.transport.type. Cause: ${READ_EXCEPTION}" && exit 1
+    TRANSPORT=${RESULT}
+  fi
+
+  case "${TRANSPORT}" in
+    dpdk)
+      [[ "${DPDK_CORE-"unset"}" == "unset" ]] && echo "No DPDK_CORE environment value. Please set before running." && exit 1
+
+      # If we haven't gotten device name information from our environment.
+      if [[ "${DEVNAME-"unset"}" == "unset" ]]; then
+        read_json_value '/etc/stateless/platform.json' '.kv.transport.interface'
+        [[ "${READ_EXCEPTION}" ]] && echo "Failed accessing .kv.transport.interface. Cause: ${READ_EXCEPTION}" && exit 1
+        DEVNAME=${RESULT}
+      fi
+
+      # If we haven't gotten our VLAN tag from our enviornment.
+      if [[ "${VLAN_TAG-"unset"}" == "unset" ]]; then
+        read_json_value '/etc/stateless/platform.json' '.kv.transport.vlan_tag'
+        [[ "${READ_EXCEPTION}" ]] && echo "Failed accessing .kv.transport.vlan_tag. Cause: ${READ_EXCEPTION}" && exit 1
+        VLAN_TAG=${RESULT}
+      fi
+
+      PCI_ADDR=$(basename $(realpath /sys/class/net/${DEVNAME}/device))
+      [[ -z "${PCI_ADDR}" ]] && echo "Could not determine PCI Address." && exit 1
+
+      echo "Detected DPDK Environment: DEVNAME=${DEVNAME} PCI_ADDR=${PCI_ADDR} VLAN_ID=${VLAN_TAG}"
+
+      RC_LOCATOR=${RC_LOCATOR:-"basic+dpdk:"}
+      ;;
+    udp)
+      # If we haven't gotten transport IP information from our environment.
+      if [[ "${TRANSPORT_IP-"unset"}" == "unset" ]]; then
+        # Get our Host ID
+        read_json_value "/var/stateless/orchestrator/member_config.json" ".host_id"
+        [[ "${READ_EXCEPTION}" ]] && echo "Failed accessing host_id. Cause: ${READ_EXCEPTION}" && exit 1
+        HOST_UUID=${RESULT}
+
+        # Pull the host address from the cluster state JSON (we already checked that we have it above.)
+        read_json_value "/var/stateless/orchestrator/cluster_state.json" \
+          '.configuration | .ensemble[], .non_ensemble[]? | select(.host_id == "'"${HOST_UUID}"'") | .address'
+        TRANSPORT_IP=${RESULT}
+        [[ "${READ_EXCEPTION}" ]] && echo "Failed accessing member address. Cause: ${READ_EXCEPTION}" && exit 1
+      fi
+
+      # If we haven't gotten transport port information from our environment.
+      read_json_value '/etc/stateless/platform.json' ".kv.transport.${SERVICE}_port"
+      [[ "${READ_EXCEPTION}" ]] && echo "Failed accessing member address. Cause: ${READ_EXCEPTION}" && exit 1
+      TRANSPORT_PORT=${RESULT}
+
+      RC_LOCATOR=${RC_LOCATOR:-"basic+udp:host=${TRANSPORT_IP},port=${TRANSPORT_PORT}"}
+      ;;
+    *)
+      echo "Invalid transport '${TRANSPORT}'. Should be one of 'dpdk' or 'udp.'"
+      exit 1
+      ;;
+  esac
+}

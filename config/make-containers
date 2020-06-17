@@ -1,0 +1,45 @@
+#!/bin/bash -eu
+
+NL=$'\n'
+USAGE="Usage: ${0} [--debug] [--debug-opt]${NL}${NL}\
+  --version {VERSION}: The label to tag the resulting images with. Required field.${NL}\
+  --push: Push the resulting Docker images to the repository.${NL}\
+"
+PUSH=0
+VERSION=
+
+while [[ ${#} -gt 0 ]]; do
+  KEY="${1}"
+  case ${KEY} in
+    --help)
+      echo "${USAGE}"
+      exit 0
+      ;;
+    --version)
+      VERSION=$2
+      shift 2
+      ;;
+    --push)
+      PUSH=1
+      shift
+      ;;
+    *)
+      echo "Unrecognized option: ${KEY}"
+      echo "${USAGE}"
+      exit 1
+      ;;
+  esac
+done
+
+if [[ -z "${VERSION}" ]]; then
+    echo "Version is required."
+    echo "${USAGE}"
+    exit 1
+fi
+
+docker build . -f config/Dockerfile.deploy --target rc-coordinator --tag statelesstestregistry.azurecr.io/stateless/ramcloud/coordinator:$VERSION
+docker build . -f config/Dockerfile.deploy --target rc-server --tag statelesstestregistry.azurecr.io/stateless/ramcloud/server:$VERSION
+if [[ ${PUSH} -ne 0 ]]; then
+    docker push statelesstestregistry.azurecr.io/stateless/ramcloud/coordinator:$VERSION
+    docker push statelesstestregistry.azurecr.io/stateless/ramcloud/server:$VERSION
+fi
