@@ -1,0 +1,250 @@
+Adds logging for Master Service
+
+From: nobody <nobody@nowhere>
+
+
+---
+ src/BackupClient.cc  |    5 +++++
+ src/MasterService.cc |   13 +++++++++++++
+ src/ObjectManager.cc |   16 ++++++++++++++++
+ src/RamCloud.cc      |    6 ++++++
+ 4 files changed, 40 insertions(+)
+
+diff --git a/src/BackupClient.cc b/src/BackupClient.cc
+index 301d4a92..8504ff12 100644
+--- a/src/BackupClient.cc
++++ b/src/BackupClient.cc
+@@ -618,6 +618,7 @@ WriteSegmentRpc::WriteSegmentRpc(Context* context,
+     : ServerIdRpcWrapper(context, backupId,
+                          sizeof(WireFormat::BackupWrite::Response))
+ {
++    LOG(WARNING, "PROFILE-s: masterId=%lud backupId=%lud", masterId.getId(), backupId.getId());
+     WireFormat::BackupWrite::Request* reqHdr(
+             allocHeader<WireFormat::BackupWrite>(backupId));
+     reqHdr->masterId = masterId.getId();
+@@ -636,7 +637,9 @@ WriteSegmentRpc::WriteSegmentRpc(Context* context,
+     if (segment)
+         segment->appendToBuffer(request, offset, length);
+     CycleCounter<RawMetric> _(&metrics->master.replicationPostingWriteRpcTicks);
++    LOG(WARNING, "OFERTAG: starting send to backup" );
+     send();
++    LOG(WARNING, "PROFILE-e: masterId=%lud backupId=%lud", masterId.getId(), backupId.getId());
+ }
+ 
+ /**
+@@ -649,7 +652,9 @@ WriteSegmentRpc::WriteSegmentRpc(Context* context,
+ void
+ WriteSegmentRpc::wait()
+ {
++    LOG(WARNING, "PROFILE-s: " );
+     waitAndCheckErrors();
++    LOG(WARNING, "PROFILE-e: " );
+ }
+ 
+ } // namespace RAMCloud
+diff --git a/src/MasterService.cc b/src/MasterService.cc
+index 244fee92..c58f2009 100644
+--- a/src/MasterService.cc
++++ b/src/MasterService.cc
+@@ -133,6 +133,9 @@ MasterService::dispatch(WireFormat::Opcode opcode, Rpc* rpc)
+         return;
+     }
+ 
++    LOG(WARNING, "OFERTAG: Processing message %s", WireFormat::opcodeSymbol(opcode));
++    LOG(WARNING, "OFERTAG: dispatch master server");
++
+     switch (opcode) {
+         case WireFormat::DropTabletOwnership::opcode:
+             callHandler<WireFormat::DropTabletOwnership, MasterService,
+@@ -267,6 +270,9 @@ MasterService::dispatch(WireFormat::Opcode opcode, Rpc* rpc)
+             prepareErrorResponse(rpc->replyPayload,
+                                  STATUS_UNIMPLEMENTED_REQUEST);
+     }
++
++    LOG(WARNING, "OFERTAG: Done Processing message %s", WireFormat::opcodeSymbol(opcode));
++
+ }
+ 
+ /**
+@@ -1353,6 +1359,7 @@ MasterService::multiRead(const WireFormat::MultiOp::Request* reqHdr,
+         WireFormat::MultiOp::Response* respHdr,
+         Rpc* rpc)
+ {
++    LOG(WARNING, "PROFILE-s: " );
+     uint32_t numRequests = reqHdr->count;
+     uint32_t reqOffset = sizeof32(*reqHdr);
+ 
+@@ -1412,6 +1419,7 @@ MasterService::multiRead(const WireFormat::MultiOp::Request* reqHdr,
+ 
+         currentResp->length = rpc->replyPayload->size() - initialLength;
+     }
++    LOG(WARNING, "PROFILE-e: " );
+ }
+ 
+ /**
+@@ -1525,6 +1533,7 @@ MasterService::multiWrite(const WireFormat::MultiOp::Request* reqHdr,
+         WireFormat::MultiOp::Response* respHdr,
+         Rpc* rpc)
+ {
++    LOG(WARNING, "PROFILE-s: " );
+     uint32_t numRequests = reqHdr->count;
+     uint32_t reqOffset = sizeof32(*reqHdr);
+     respHdr->count = numRequests;
+@@ -1581,14 +1590,17 @@ MasterService::multiWrite(const WireFormat::MultiOp::Request* reqHdr,
+     // that the response can go back in a single RPC.
+     assert(rpc->replyPayload->size() <= Transport::MAX_RPC_LEN);
+ 
++    LOG(WARNING, "OFERTAG: starting async to backup" );
+     // All of the individual writes were done asynchronously. Sync the objects
+     // now to propagate them in bulk to backups.
+     objectManager.syncChanges();
+ 
++    LOG(WARNING, "OFERTAG: starting reply" );
+     // Respond to the client RPC now. Removing old index entries can be
+     // done asynchronously while maintaining strong consistency.
+     rpc->sendReply();
+     // reqHdr, respHdr, and rpc are off-limits now!
++    LOG(WARNING, "OFERTAG: reply sent" );
+ 
+     // It is possible that some of the writes overwrote pre-existing values.
+     // So, delete old index entries if any.
+@@ -1598,6 +1610,7 @@ MasterService::multiWrite(const WireFormat::MultiOp::Request* reqHdr,
+             requestRemoveIndexEntries(oldObject);
+         }
+     }
++    LOG(WARNING, "PROFILE-e: " );
+ }
+ 
+ /**
+diff --git a/src/ObjectManager.cc b/src/ObjectManager.cc
+index 9c2d3b0c..8776e73c 100644
+--- a/src/ObjectManager.cc
++++ b/src/ObjectManager.cc
+@@ -326,6 +326,7 @@ ObjectManager::readObject(Key& key, Buffer* outBuffer,
+                 RejectRules* rejectRules, uint64_t* outVersion,
+                 bool valueOnly)
+ {
++    LOG(WARNING, "PROFILE-s: with key: %s", key.toString().c_str());
+     objectMap.prefetchBucket(key.getHash());
+     HashTableBucketLock lock(*this, key);
+ 
+@@ -339,7 +340,10 @@ ObjectManager::readObject(Key& key, Buffer* outBuffer,
+     Log::Reference reference;
+     bool found = lookup(lock, key, type, buffer, &version, &reference);
+     if (!found || type != LOG_ENTRY_TYPE_OBJ)
++    {
++        LOG(WARNING, "PROFILE-e: with key: %s", key.toString().c_str());
+         return STATUS_OBJECT_DOESNT_EXIST;
++    }
+ 
+     if (outVersion != NULL)
+         *outVersion = version;
+@@ -347,7 +351,10 @@ ObjectManager::readObject(Key& key, Buffer* outBuffer,
+     if (rejectRules != NULL) {
+         Status status = rejectOperation(rejectRules, version);
+         if (status != STATUS_OK)
++        {
++            LOG(WARNING, "PROFILE-e: with key: %s", key.toString().c_str());
+             return status;
++        }
+     }
+ 
+     // Ensure the object being read is replicated durably.
+@@ -365,6 +372,7 @@ ObjectManager::readObject(Key& key, Buffer* outBuffer,
+     PerfStats::threadStats.readKeyBytes +=
+             object.getKeysAndValueLength() - valueLength;
+ 
++    LOG(WARNING, "PROFILE-e: with key: %s", key.toString().c_str());
+     return STATUS_OK;
+ }
+ 
+@@ -1183,6 +1191,7 @@ ObjectManager::writeObject(Object& newObject, RejectRules* rejectRules,
+                 uint64_t* outVersion, Buffer* removedObjBuffer,
+                 RpcResult* rpcResult, uint64_t* rpcResultPtr)
+ {
++    LOG(WARNING, "PROFILE-s: ");
+     uint16_t keyLength = 0;
+     const void *keyString = newObject.getKey(0, &keyLength);
+     Key key(newObject.getTableId(), keyString, keyLength);
+@@ -1193,18 +1202,21 @@ ObjectManager::writeObject(Object& newObject, RejectRules* rejectRules,
+     // If the tablet doesn't exist in the NORMAL state, we must plead ignorance.
+     TabletManager::Tablet tablet;
+     if (!tabletManager->getTablet(key, &tablet)) {
++        LOG(WARNING, "PROFILE-e: ");
+         return STATUS_UNKNOWN_TABLET;
+     }
+     if (tablet.state != TabletManager::NORMAL) {
+         if (tablet.state == TabletManager::LOCKED_FOR_MIGRATION)
+             throw RetryException(HERE, 1000, 2000,
+                     "Tablet is currently locked for migration!");
++        LOG(WARNING, "PROFILE-e: ");
+         return STATUS_UNKNOWN_TABLET;
+     }
+ 
+     // If key is locked due to an in-progress transaction, we must wait.
+     if (lockTable.isLockAcquired(key)) {
+         RAMCLOUD_CLOG(NOTICE, "Retrying because of transaction lock");
++        LOG(WARNING, "PROFILE-e: ");
+         return STATUS_RETRY;
+     }
+ 
+@@ -1236,6 +1248,7 @@ ObjectManager::writeObject(Object& newObject, RejectRules* rejectRules,
+         if (status != STATUS_OK) {
+             if (outVersion != NULL)
+                 *outVersion = currentVersion;
++            LOG(WARNING, "PROFILE-e: ");
+             return status;
+         }
+     }
+@@ -1277,6 +1290,7 @@ ObjectManager::writeObject(Object& newObject, RejectRules* rejectRules,
+     // Note: only check for enough space for the object (tombstones
+     // don't get included in the limit, since they can be cleaned).
+     if (!log.hasSpaceFor(appends[0].buffer.size())) {
++        LOG(WARNING, "PROFILE-e: ");
+         throw RetryException(HERE, 1000, 2000, "Memory capacity exceeded");
+     }
+ 
+@@ -1295,6 +1309,7 @@ ObjectManager::writeObject(Object& newObject, RejectRules* rejectRules,
+     }
+ 
+     if (!log.append(appends, (tombstone ? 2 : 1) + (rpcResult ? 1 : 0))) {
++        LOG(WARNING, "PROFILE-e: ");
+         // The log is out of space. Tell the client to retry and hope
+         // that the cleaner makes space soon.
+         throw RetryException(HERE, 1000, 2000, "Must wait for cleaner");
+@@ -1347,6 +1362,7 @@ ObjectManager::writeObject(Object& newObject, RejectRules* rejectRules,
+                               recordCount);
+     }
+ 
++    LOG(WARNING, "PROFILE-e: ");
+     return STATUS_OK;
+ }
+ 
+diff --git a/src/RamCloud.cc b/src/RamCloud.cc
+index 94c8c8ea..39212191 100644
+--- a/src/RamCloud.cc
++++ b/src/RamCloud.cc
+@@ -1937,8 +1937,11 @@ RamCloud::multiIncrement(MultiIncrementObject* requests[], uint32_t numRequests)
+ void
+ RamCloud::multiRead(MultiReadObject* requests[], uint32_t numRequests)
+ {
++    LOG(WARNING, "PROFILE-s: %u", numRequests);
+     MultiRead request(this, requests, numRequests);
++    LOG(WARNING, "PROFILE: waiting to complete");
+     request.wait();
++    LOG(WARNING, "PROFILE-e: %u", numRequests);
+ }
+ 
+ /**
+@@ -1979,8 +1982,11 @@ RamCloud::multiRemove(MultiRemoveObject* requests[], uint32_t numRequests)
+ void
+ RamCloud::multiWrite(MultiWriteObject* requests[], uint32_t numRequests)
+ {
++    LOG(WARNING, "PROFILE-s: %u", numRequests);
+     MultiWrite request(this, requests, numRequests);
++    LOG(WARNING, "PROFILE: waiting to complete");
+     request.wait();
++    LOG(WARNING, "PROFILE-e: %u", numRequests);
+ }
+ 
+ /**
